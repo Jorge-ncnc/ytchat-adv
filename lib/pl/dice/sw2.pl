@@ -30,11 +30,13 @@ $unique{'ダブルストンプ'}     = $unique{'DS'};
 my $unique_reg = join('|', keys %unique);
 sub rateRoll {
   my $comm = shift;
+  my $needSummation = $comm =~ s/^[Σ∑]// ? 1 : 0;
   if($comm !~ /^
-    (?: (?:[kr]|威力) ( [0-9]+ | \([0-9\+\-]+\) | $unique_reg ) )
+    (?: (?:[kr]|威力) ( [0-9]+ | \([0-9\+\-*\/()]+\) | $unique_reg ) )
     (?:\[([0-9\+\-]+)\])?
-    ([0-9a-z\+\-\*\/\@\$~()><\#!値必殺首切出目難半減]*)
+    ([0-9a-z\+\-\*\/\@\$~()><\#!PAVC値必殺首切出目難半減威力確実化聖王の冠薬師道具セット]*)
     (?:\:([0-9]+))?
+    (?:\:(\S+))?
     (?:\s|$)
   /ix){
     return "";
@@ -43,48 +45,97 @@ sub rateRoll {
   my $unique = (exists $unique{$rate}) ? $unique{$rate}{'name'} : '';
   my $crit   = $2;
   my $form   = $3;
-  my $repeat = $4;
+  my $repeatCount = $4;
+  my $repeatLabels = $5;
   my $rate_up;
   my $crit_atk;
   my $crit_ray;
   my $witch_blaze;
   my $fixed;
+  my $powerAccurate;
+  my $virtuousCrown;
   my $curse;
   my $gf;
   while($form =~ s/gf//gi)                            { $gf = ' GF'; }                      #Gフォーチュン
   while($form =~ s/(?:\@|C値)([0-9][0-9\+\-]*)//gi)   { $crit     = $1 if !$crit; }         #C値
+  while($form =~ s/(?:VC|聖王(?:の冠)?)//gi)          { $virtuousCrown = 1; }               #聖王の冠
   while($form =~ s/(?:[rck]|首切)(\-?[0-9]*)//gi)     { $rate_up  = $1 ne ''?$1:5 if !$rate_up; } #首切効果
   while($form =~ s/(?:[#b!]|必殺)([\+\-]?[0-9]*)//gi) { $crit_atk = $1 ne ''?$1:1 if !$crit_atk; }#必殺効果
+  while($form =~ s/薬師(?:道具(?:セット)?)?//gi)         { $fixed = 'n4'; }                    # 薬師道具セット
   while($form =~ s/(?:[\$]|出目)(n?[0-9]+)//gi)       { $fixed    = $1 if !$fixed; }        #出目固定
-  while($form =~ s/(?:[\$]|出目)\+?([\+\-][0-9]+)//gi){ $crit_ray = $1 if !$crit_ray; }     #出目修正【クリティカルレイ】
+  while($form =~ s/(?:[\$]|出目)\+?([\+\-][0-9+\-()]+)//gi){ $crit_ray = $1 if !$crit_ray; }     #出目修正【クリティカルレイ】
   while($form =~ s/(?:[\$]|出目)~\+?([\+\-][0-9]+)//gi){ $witch_blaze = $1 if !$witch_blaze; } #出目修正［魔女の火］
+  while($form =~ s/(?:PA|威力確実化)(\d+)?//gi)       { $powerAccurate = $1 || 4; }         #威力確実化
   while($form =~ s/(?:[<]|難)([0-9]+)//gi)            { $curse    = $1 if !$curse; }        #Aカース「難しい」
   
   $rate = $unique || calc($rate);
   $crit = calc($crit);
   if($rate > 100){ $rate = 100; } elsif($rate < 0){ $rate = 0; }
   if($crit <= 0){ $crit = 0; } elsif($crit < 3){ $crit = 3; }
-  
-  $repeat = ($repeat > 20) ? 20 : (!$repeat) ? undef : $repeat;
-  my @result;
-  foreach my $i (1 .. ($repeat || 1)){
-    push(@result,
-      rateCalc(
-        $rate    ,
-        $crit    ,
-        $form    ,
-        $rate_up ,
-        $crit_atk,
-        $crit_ray,
-        $witch_blaze,
-        $fixed   ,
-        $curse   ,
-        $gf      ,
-        $repeat ? $i : undef
-      )
-    );
+
+  $crit_ray = calc($crit_ray) if $crit_ray;
+
+  my @repeatCountLabels = ();
+  my @repeatLabels;
+
+  if ($repeatCount > 0) {
+    @repeatLabels = ();
+    $repeatCount = ($repeatCount > 50) ? 50 : (!$repeatCount) ? 1 : $repeatCount;
+    for my $i (1 .. $repeatCount) {
+      push(@repeatCountLabels, makeRollIndexText($i));
+    }
   }
-  return join('<br>',@result);
+
+  if (($repeatLabels // '') ne '') {
+    @repeatLabels = split(/\s*,\s*/, $repeatLabels);
+    @repeatLabels = @repeatLabels[0 .. 49] if $#repeatLabels > 49;
+  }
+
+  my @result;
+  my $count;
+  my $summation = 0;
+  foreach my $repeatLabel (@repeatLabels ? @repeatLabels : ('')) {
+    foreach my $i (1 .. ($repeatCount || 1)){
+      my $resultRow = '';
+
+      foreach my $j (1 .. ($powerAccurate ? 2 : 1)) {
+        (my $currentResultRow, my $criticalCount, my $lastNumber, my $damage) = rateCalc(
+            $rate    ,
+            $crit    ,
+            $form    ,
+            $rate_up ,
+            $crit_atk,
+            $crit_ray,
+            $witch_blaze,
+            $fixed   ,
+            $curse   ,
+            $virtuousCrown,
+            $gf      ,
+            ($repeatLabel ne '' || $repeatCount > 1) && $j == 1 ? $repeatLabel . $repeatCountLabels[$i - 1] : undef,
+            ++$count
+        );
+
+        # 威力確実化
+        if ($j == 1 && $powerAccurate && !$criticalCount && $lastNumber <= $powerAccurate) {
+          $resultRow = "$currentResultRow | 振り直し: ";
+          next;
+        } else {
+          $resultRow .= $currentResultRow;
+          $summation += $damage;
+          last;
+        }
+      }
+
+      push(@result, $resultRow);
+    }
+  }
+  my $combinedResult = join('<br>',@result);
+
+  if ($needSummation) {
+    $combinedResult .= "<br>合計： ${summation}";
+  }
+
+  return $combinedResult;
 }
 
 sub rateCalc {
@@ -97,14 +148,19 @@ sub rateCalc {
   my $witch_blaze = shift;
   my $fixed    = shift;
   my $curse    = shift;
+  my $virtuousCrown = shift;
   my $gf       = shift;
+  my $label    = shift;
   my $repeat   = shift;
   my $unique   = (exists $unique{$rate}) ? $unique{$rate}{'name'} : '';
   
+  return '' if $form =~ /[a-z]/i;
+  
   my $total = 0;
-  my $code = (defined($repeat) ? makeRollIndexText($repeat) . ' ' : '') . ($unique || "威力${rate}");
+  my $code = (defined($label) ? $label . ' ' : '') . ($unique || "威力${rate}");
   my @results;
   my $crits_max = 20;
+  my $lastNumber;
   foreach my $crits (0 .. $crits_max) {
     my $number;
     my $inside_code;
@@ -117,12 +173,12 @@ sub rateCalc {
         $number = $dice + $demifixed;
         $inside_code = "($demifixed)+${dice}";
         #出目最低値がC値以下だと∞
-        if($crit && $demifixed > 1 && $demifixed+1 >= $crit){ return $code." C値${crit} → \[${inside_code}:クリティカル!!!\]... = ∞"; }
+        if($crit && $demifixed > 1 && $demifixed+1 >= $crit){ return ($code." C値${crit} → \[${inside_code}:クリティカル!!!\]... = ∞", undef, $number); }
       }
       #両方固定
       else {
         $number = ($fixed > 12) ? 12 : ($fixed < 2) ? 2 : $fixed;
-        if($number <= 2 && !$unique){ return $code." → \[${number}:1ゾロ..\] = 0"; }
+        if($number <= 2 && !$unique && !$virtuousCrown){ return ($code." → \[${number}:1ゾロ..\] = 0", 0, $number); }
         $fixed = 0; # 1回処理したらなくなる
       }
     }
@@ -142,8 +198,8 @@ sub rateCalc {
     my $number_result = $number;
     
     # 1ゾロ
-    if(!$crits && $number <= 2 && !$unique){
-      return $code." → \[${inside_code}=${number}:1ゾロ..\] = 0";
+    if(!$crits && $number <= 2 && !$unique && !$virtuousCrown){
+      return ($code." → \[${inside_code}=${number}:1ゾロ..\] = 0", 0, $number);
       last;
     }
     $inside_code .= $inside_code ? '=' : '';
@@ -176,6 +232,8 @@ sub rateCalc {
       $number_result .=">×";
     }
     
+    $lastNumber = $number;
+    
     # 威力結果算出
     my $power;
     if($unique){
@@ -207,6 +265,7 @@ sub rateCalc {
     last;
   }
   my $result = join('+', @results);
+  my $criticalCount = $#results; # クリティカルした回数
   
   ## 修正値処理
   $form =~ s|半減|//|;
@@ -235,7 +294,7 @@ sub rateCalc {
   
   $result .= ' = ';
   $code .= " C値${crit}" if $crit;
-  return $code . $gf. ' → '. $result . $total;
+  return ($code . $gf. ' → '. $result . $total, $criticalCount, $lastNumber, $total);
 }
 
 sub growRoll {
@@ -253,7 +312,7 @@ sub growRoll {
   $num = $num ? $num : 2;
   my @result;
   foreach(1 .. $num){
-    push(@result, $grow[int(rand(6))]);
+    push(@result, '<em class="grow-result-unit">' . $grow[int(rand(6))] . '</em>');
   }
   return join(' or ', @result);
 }
@@ -261,8 +320,75 @@ sub growRoll {
 sub makeRollIndexText {
   my $repeatId = shift;
   return undef unless defined($repeatId);
-  my @chars = ('❶', '❷', '❸', '❹', '❺', '❻', '❼', '❽', '❾', '❿', '⓫', '⓬', '⓭', '⓮', '⓯', '⓰', '⓱', '⓲', '⓳', '⓴');
+  my @chars = (
+      '①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩',
+      '⑪', '⑫', '⑬', '⑭', '⑮', '⑯', '⑰', '⑱', '⑲', '⑳',
+      '㉑', '㉒', '㉓', '㉔', '㉕', '㉖', '㉗', '㉘', '㉙', '㉚',
+      '㉛', '㉜', '㉝', '㉞', '㉟', '㊱', '㊲', '㊳', '㊴', '㊵',
+      '㊶', '㊷', '㊸', '㊹', '㊺', '㊻', '㊼', '㊽', '㊾', '㊿',
+  );
   return $chars[$repeatId - 1];
+}
+
+sub lineAoECheck {
+  my $comm = shift;
+
+  if ($comm !~ /^(?:(\d+)|([^\s]+))?\$(?:貫通|突破)(?:<=([1-6]))?(?:\s|$)/) {
+    return '';
+  }
+
+  my $times = $1 || 1;
+  my @labels = ($2 // '') ne '' ? split(',', $2) : ();
+  my $threshold = $3 || 3;
+
+  $times = $#labels + 1 if $#labels >= 0;
+
+  sub checkOnce {
+    my $_threshold = shift;
+
+    my $screenCommand = '1d';
+    my $diceValue = int(rand(6)) + 1;
+    my $checkResult = $diceValue <= $_threshold ? '受ける' : '受けない';
+    my $checkResultClass = $checkResult eq '受ける' ? 'hit' : 'miss';
+    my $thresholdText = $_threshold == 3 ? '' : "[<=${_threshold}]";
+
+    return (
+        $checkResult,
+        "${screenCommand} → ${diceValue}${thresholdText} → <span class=\"${checkResultClass}\">${checkResult}</span>"
+    );
+  }
+
+  my @textRows = ();
+  my @hitLabels = ();
+  my @missLabels = ();
+
+  foreach (1 .. $times) {
+    my $label = $labels[$_ - 1] // '';
+
+    (my $result, my $row) = checkOnce($threshold);
+
+    push(@hitLabels, $label) if $result eq '受ける';
+    push(@missLabels, $label) if $result eq '受けない';
+
+    if ($label eq '') {
+      $label = makeRollIndexText($_) if $times > 1;
+    } else {
+      $label = "〚${label}〛";
+    }
+
+    $row = "${label} ${row}" if $label ne '';
+
+    push(@textRows, $row);
+  }
+
+  my $text = join("\n", @textRows);
+
+  if ($#labels >= 0) {
+    $text .= "\n<span class=\"hit\">受ける： " . (@hitLabels ? '<span class="hit-labels">' . join(',', @hitLabels) . '</span>' : '<em>該当なし</em>') . "</span>";
+    $text .= "\n<span class=\"miss\">受けない： " . (@missLabels ? join(',', @missLabels) : '<em>該当なし</em>') . "</span>";
+  }
+
+  return $text;
 }
 
 1;
